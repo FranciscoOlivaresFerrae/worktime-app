@@ -42,6 +42,7 @@ export function useWorkTime() {
     setSpreadsheetId(null);
     setRows([]);
     localStorage.removeItem('google_access_token');
+    localStorage.removeItem('google_token_expiry'); // 💡 Limpiamos la expiración
     localStorage.removeItem(CACHE_KEY);
     localStorage.removeItem(QUEUE_KEY);
   }
@@ -97,7 +98,6 @@ export function useWorkTime() {
       const sheetId = await getOrCreateSpreadsheet(accessToken);
       setSpreadsheetId(sheetId);
       
-      // Si hay internet, intentamos procesar pendientes antes de leer
       if (navigator.onLine) {
         await processSyncQueue(accessToken, sheetId);
       }
@@ -106,13 +106,24 @@ export function useWorkTime() {
       updateRowsStateAndCache(data);
     } catch (err) {
       console.error('ERROR CRÍTICO EN TERMINAL (Google Sheets Init):', err);
-      if (err.message?.includes('401') || err.message?.includes('Invalid Credentials')) {
+      // 💡 Si detectamos error 401 o credenciales inválidas, forzamos salida limpia y avisamos
+      if (
+        err.message?.includes('401') || 
+        err.message?.includes('Invalid Credentials') ||
+        err.status === 401
+      ) {
         handleLogout();
+        setModalMessage({
+          show: true,
+          title: 'Sesión expirada',
+          message: 'Tu sesión de Google ha caducado por seguridad. Por favor vuelve a conectar.',
+          type: 'warning'
+        });
       } else {
         console.warn('⚠️ Trabajando con datos locales (offline mode activo)');
       }
     } finally {
-      setLoading(false);
+      setLoading(false); // 💡 Nos aseguramos de apagar el loading sí o sí
     }
   }
 
@@ -144,15 +155,26 @@ export function useWorkTime() {
   useEffect(() => {
     initGoogleAuth(async (accessToken) => {
       setToken(accessToken);
+      const expiresAt = Date.now() + 3600 * 1000;
       localStorage.setItem('google_access_token', accessToken);
+      localStorage.setItem('google_token_expiry', expiresAt);
+
       setShowBetaModal(true);
       await initializeUserData(accessToken);
     });
 
     const savedToken = localStorage.getItem('google_access_token');
-    if (savedToken) {
+    const tokenExpiry = localStorage.getItem('google_token_expiry');
+
+    if (savedToken && tokenExpiry) {
+      // Usamos queueMicrotask para evitar el aviso de setState sincrónico en useEffect
       queueMicrotask(() => {
-        initializeUserData(savedToken);
+        if (Date.now() > parseInt(tokenExpiry, 10)) {
+          console.warn('⚠️ El token de Google ha expirado. Cerrando sesión...');
+          handleLogout();
+        } else {
+          initializeUserData(savedToken);
+        }
       });
     }
   }, []);
